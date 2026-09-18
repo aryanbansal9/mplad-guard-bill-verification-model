@@ -1,0 +1,10 @@
+# Python caches
+__pycache__/
+*.py[cod]
+
+# Environments
+venv/
+.env
+
+# Data (Ignore test images and Excel sheets so they don't bloat GitHub)
+data/
