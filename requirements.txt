@@ -1,0 +1,17 @@
+# API & Web
+fastapi
+uvicorn
+python-multipart
+pydantic
+
+# Computer Vision & OCR
+opencv-python-headless
+easyocr
+torch
+torchvision
+
+# LLM & Logic
+google-generativeai
+fuzzywuzzy
+python-Levenshtein
+python-dotenv
