@@ -1,17 +1,24 @@
 from fastapi import FastAPI, UploadFile, File, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 import uuid
+import logging
 
-# Internal schemas
-from backend.models import VerificationResponse, ExtractedBillData, GFRComplianceReport, BillLineItem
+# AI Models & Engine Modules
+from backend.models import VerificationResponse
+from backend.ocr_engine import extract_raw_text_from_image
+from backend.llm_parser import parse_raw_text_to_json
+from backend.rule_engine import evaluate_gfr_154_compliance
+
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger("MPLADS_API")
 
 app = FastAPI(
     title="MPLADS Guardian API", 
-    description="AI-powered backend for GFR 154 compliance and bill verification",
-    version="1.0.0"
+    description="Multi-parameter anomaly detection engine for GFR 154 compliance and bill verification",
+    version="2.0.0"
 )
 
-# Allow the frontend to communicate with the FastAPI backend securely
+# Secure cross-origin access for frontend integration
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"], 
@@ -21,39 +28,42 @@ app.add_middleware(
 
 @app.get("/")
 async def health_check():
-    return {"status": "active", "module": "MPLADS Guardian Engine"}
+    return {"status": "active", "engine": "MPLADS Guardian Advanced Rules Engine v2"}
 
 @app.post("/api/verify-bill", response_model=VerificationResponse)
 async def verify_procurement_bill(file: UploadFile = File(...)):
     """
-    Ingests a raw bill image, runs OCR, standardizes items, and checks GFR Rule 154.
+    1. Reads incoming physical procurement bill / UC document.
+    2. Runs OpenCV preprocessing & EasyOCR extraction.
+    3. Normalizes unstructured text into structured JSON via Gemini LLM.
+    4. Executes multi-parameter GFR 154 audit (velocity, price benchmarks, ghost vendors).
     """
     if not file.filename.lower().endswith(('.png', '.jpg', '.jpeg')):
-        raise HTTPException(status_code=400, detail="Only JPG/PNG images are allowed.")
+        raise HTTPException(status_code=400, detail="Only JPG and PNG document images are accepted.")
 
-    # =============================================================
-    # MOCK RESPONSE (Allows frontend testing while we build the AI)
-    # =============================================================
-    mock_extracted = ExtractedBillData(
-        vendor_name="Shri Ram Building Materials",
-        bill_date="2026-08-15",
-        total_amount=49999.00,  # Flag: Just under the 50k threshold limit
-        line_items=[
-            BillLineItem(item_description="Eent", standardized_item="Brick", quantity=1000, unit_price=10.0),
-            BillLineItem(item_description="Cement", standardized_item="Cement", quantity=50, unit_price=799.98)
-        ]
-    )
+    try:
+        # Read raw image buffer
+        image_bytes = await file.read()
+        logger.info(f"Initiating verification for: {file.filename}")
 
-    mock_compliance = GFRComplianceReport(
-        is_compliant=False,
-        flag_reason="GFR 154 Violation Alert: Total amount exactly at ₹49,999 evasion threshold. Vendor flagged 6 times in District.",
-        vendor_frequency_count=6,
-        confidence_score=0.92
-    )
+        # Step A: Computer Vision & OCR Extraction
+        raw_text = extract_raw_text_from_image(image_bytes)
+        
+        # Step B: LLM Schema Parsing
+        extracted_data = parse_raw_text_to_json(raw_text)
+        
+        # Step C: Multi-Parameter Contextual Anomaly Engine
+        # (Standardizes inventory, audits prices, verifies GFR 154 threshold, checks 30d velocity & ghost vendors)
+        compliance_report = evaluate_gfr_154_compliance(extracted_data)
 
-    return VerificationResponse(
-        transaction_id=f"TXN-{uuid.uuid4().hex[:8].upper()}",
-        document_classification="Handwritten Receipt (Kaccha Bill)",
-        extracted_data=mock_extracted,
-        compliance_report=mock_compliance
-    )
+        # Return standardized verification payload
+        return VerificationResponse(
+            transaction_id=f"TXN-{uuid.uuid4().hex[:8].upper()}",
+            document_classification="Handwritten Receipt (Kaccha Bill)",
+            extracted_data=extracted_data,
+            compliance_report=compliance_report
+        )
+
+    except Exception as e:
+        logger.error(f"Verification pipeline failed: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Processing Pipeline Error: {str(e)}")

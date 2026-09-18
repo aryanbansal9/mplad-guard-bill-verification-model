@@ -1,69 +1,110 @@
 import logging
 from fuzzywuzzy import process
 from backend.models import ExtractedBillData, GFRComplianceReport, BillLineItem
-from backend.database import get_vendor_frequency
+from backend.database import get_vendor_historical_velocity, check_vendor_registration
 
 logger = logging.getLogger("Rule_Engine")
 
-# Master ontology for public works (Standardizing local terminology)
-MASTER_ITEM_ONTOLOGY = [
-    "Brick", "Cement", "Sand", "Steel", "Gravel", "Tiles", "Paint", "Pipes", "Labor", "Wood"
-]
+# Master standard price ontology (Estimated standard regional rates per unit in ₹)
+REGIONAL_PRICE_BENCHMARKS = {
+    "Brick": 9.0,        # Standard: ₹8 - ₹10 per piece
+    "Cement": 380.0,     # Standard: ₹350 - ₹420 per 50kg bag
+    "Sand": 45.0,        # Standard: ₹40 - ₹55 per cu.ft
+    "Steel": 65.0,       # Standard: ₹60 - ₹75 per kg
+    "Gravel": 35.0,      # Standard: ₹30 - ₹45 per cu.ft
+    "Tiles": 40.0,       # Standard: ₹35 - ₹60 per sq.ft
+    "Paint": 280.0,      # Standard: ₹250 - ₹350 per liter
+    "Pipes": 120.0,      # Standard: ₹100 - ₹160 per meter
+    "Labor": 500.0       # Standard daily wage rate
+}
 
-def standardize_inventory(line_items: list[BillLineItem]) -> list[BillLineItem]:
-    """Maps local Hindi/English terms (e.g., 'Eent') to standard terms (e.g., 'Brick') using Fuzzy Matching."""
+def standardize_inventory_and_audit_prices(line_items: list[BillLineItem]) -> tuple[list[BillLineItem], list[str]]:
+    """
+    1. Maps vernacular/local item names to standardized ontology using FuzzyWuzzy.
+    2. Flags severe price gouging against regional rate benchmarks.
+    """
+    pricing_flags = []
+    ontology_keys = list(REGIONAL_PRICE_BENCHMARKS.keys())
+
     for item in line_items:
-        # Extract the best match from our master list
-        best_match, score = process.extractOne(item.item_description, MASTER_ITEM_ONTOLOGY)
+        best_match, score = process.extractOne(item.item_description, ontology_keys)
         
-        if score >= 70:  # 70% similarity threshold
+        if score >= 65:
             item.standardized_item = best_match
-        else:
-            item.standardized_item = "Unclassified"
+            benchmark_price = REGIONAL_PRICE_BENCHMARKS[best_match]
             
-    return line_items
+            # Flag if claimed price is more than 80% higher than benchmark
+            if item.unit_price > benchmark_price * 1.8:
+                pricing_flags.append(
+                    f"Price Gouging Alert: '{item.item_description}' billed at ₹{item.unit_price:.2f}/unit (Benchmark: ₹{benchmark_price:.2f})"
+                )
+        else:
+            item.standardized_item = "Unclassified Material"
+            
+    return line_items, pricing_flags
+
 
 def evaluate_gfr_154_compliance(extracted_data: ExtractedBillData) -> GFRComplianceReport:
     """
-    The core anomaly detection engine for GFR Rule 154.
-    Rule 154 allows direct purchases up to ₹50,000 without quotations. 
-    Corrupt actors often make handmade bills for ₹49,999 to bypass this.
+    Advanced Multi-Parameter Anomaly Engine:
+    - GFR 154 Statutory Threshold & Near-Threshold Evasion Checks
+    - 30-Day Rolling Smurfing/Velocity Verification
+    - Ghost / Unregistered Vendor Cross-Referencing
+    - Item Unit-Price Variance Audit
+    - OCR Confidence / Tampering Check
     """
-    logger.info(f"Evaluating GFR 154 compliance for vendor: {extracted_data.vendor_name}")
-    
-    is_compliant = True
-    flags = []
-    confidence = 0.95
-    
-    # 1. Statutory Threshold Check (The ₹50,000 limit)
-    total = extracted_data.total_amount
-    if total >= 50000:
-        is_compliant = False
-        flags.append(f"Hard Violation: Amount ₹{total} exceeds the ₹50,000 GFR 154 limit for direct purchases.")
-    elif 45000 <= total <= 49999.99:
-        # Suspiciously close to the limit (Classic evasion tactic)
-        is_compliant = False
-        flags.append(f"Evasion Alert: Amount ₹{total} is suspiciously close to the ₹50,000 limit.")
-        confidence = 0.88 # Lower confidence because it's technically legal, but behaviorally suspicious
-        
-    # 2. Vendor Frequency Check (Smurfing / Bill Splitting detection)
-    vendor_count = get_vendor_frequency(extracted_data.vendor_name)
-    
-    # If this is the vendor's first time, we add 1 to simulate this current bill
-    if vendor_count == 0:
-        vendor_count = 1
-        
-    if vendor_count >= 3:
-        is_compliant = False
-        flags.append(f"Frequency Alert: Vendor used {vendor_count} times in recent projects. Possible bill splitting.")
-        confidence = 0.92
+    logger.info(f"Auditing transaction for Vendor: {extracted_data.vendor_name}")
 
-    # Compile the final flag reason
-    flag_reason = " | ".join(flags) if flags else None
+    flags = []
+    risk_score = 10  # Baseline low risk
+
+    # 1. Standardize items and audit unit prices
+    extracted_data.line_items, price_flags = standardize_inventory_and_audit_prices(extracted_data.line_items)
+    flags.extend(price_flags)
+    if price_flags:
+        risk_score += len(price_flags) * 15
+
+    # 2. GFR Rule 154 Direct Procurement Limits
+    total = extracted_data.total_amount
+    if total >= 50000.0:
+        flags.append(f"Hard Violation: Invoice amount ₹{total:,.2f} breaches the ₹50,000 statutory GFR 154 limit.")
+        risk_score += 50
+    elif 45000.0 <= total <= 49999.99:
+        flags.append(f"Evasion Alert: Amount ₹{total:,.2f} is clustered near the ₹50,000 threshold (Possible intentional limit evasion).")
+        risk_score += 30
+
+    # 3. 30-Day Velocity / Smurfing Audit across District Ledger
+    velocity_30d = get_vendor_historical_velocity(extracted_data.vendor_name, extracted_data.bill_date)
+    if velocity_30d + total > 50000.0:
+        flags.append(f"Smurfing Alert: Vendor 30-day cumulative disbursements reach ₹{(velocity_30d + total):,.2f}, bypassing quotation rules.")
+        risk_score += 35
+
+    # 4. Ghost Vendor Cross-Reference
+    is_registered = check_vendor_registration(extracted_data.vendor_name)
+    if not is_registered:
+        flags.append(f"Unverified Vendor: '{extracted_data.vendor_name}' does not appear in historical e-Sakshi disbursements.")
+        risk_score += 20
+
+    # 5. Low-Confidence / Tamper Heuristic
+    if extracted_data.overall_confidence < 0.70:
+        flags.append("Document Integrity Alert: Low OCR text confidence indicates potential manual overwriting or illegible receipt.")
+        risk_score += 15
+
+    # Cap risk score between 0 and 100
+    final_risk_score = min(max(risk_score, 0), 100)
+
+    # Classify Risk Tier
+    if final_risk_score >= 70:
+        risk_level = "High"
+    elif final_risk_score >= 35:
+        risk_level = "Medium"
+    else:
+        risk_level = "Low"
 
     return GFRComplianceReport(
-        is_compliant=is_compliant,
-        flag_reason=flag_reason,
-        vendor_frequency_count=vendor_count,
-        confidence_score=confidence
+        risk_score=final_risk_score,
+        risk_level=risk_level,
+        flags=flags,
+        vendor_30d_velocity=velocity_30d,
+        is_registered_vendor=is_registered
     )
