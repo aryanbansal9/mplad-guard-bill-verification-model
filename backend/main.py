@@ -6,6 +6,8 @@ import logging
 
 from backend.vlm_engine import vlm_engine
 
+from backend.rule_engine import rule_engine
+
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("MPLADS_API")
 
@@ -48,13 +50,14 @@ async def verify_procurement_bill(file: UploadFile = File(...)):
         # Step 1: Direct VLM Image-to-JSON Extraction
         extracted_data = vlm_engine.extract_document_data(file_bytes)
         
-        # In the next step, we will re-integrate the Rule Engine here
-        # based on whether the document_type is a WCC or a Retail Bill.
+        # Step 2: Statutory GFR Compliance Check
+        compliance_report = rule_engine.analyze_bill(extracted_data)
 
         return {
             "system_audit_id": f"REQ-{uuid.uuid4().hex[:8].upper()}",
             "hardware_accelerator": vlm_engine.active_hardware,
-            "extracted_data": extracted_data
+            "extracted_data": extracted_data,
+            "gfr_compliance_report": compliance_report
         }
 
     except Exception as e:
