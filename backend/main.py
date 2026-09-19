@@ -1,24 +1,29 @@
 from fastapi import FastAPI, UploadFile, File, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
+from contextlib import asynccontextmanager
 import uuid
 import logging
 
-# AI Models & Engine Modules
-from backend.models import VerificationResponse
-from backend.ocr_engine import extract_raw_text_from_image
-from backend.llm_parser import parse_raw_text_to_json
-from backend.rule_engine import evaluate_gfr_154_compliance
+from backend.vlm_engine import vlm_engine
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("MPLADS_API")
 
+# Load the VLM into GPU memory when the server starts
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    logger.info("Starting up server - Initializing Local Edge VLM...")
+    vlm_engine.load_model()
+    yield
+    logger.info("Shutting down server - Clearing VRAM...")
+
 app = FastAPI(
     title="MPLADS Guardian API", 
-    description="Multi-parameter anomaly detection engine for GFR 154 compliance and bill verification",
-    version="2.0.0"
+    description="100% Offline Multi-parameter anomaly detection engine using Edge VLM",
+    version="3.0.0",
+    lifespan=lifespan
 )
 
-# Secure cross-origin access for frontend integration
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"], 
@@ -28,41 +33,29 @@ app.add_middleware(
 
 @app.get("/")
 async def health_check():
-    return {"status": "active", "engine": "MPLADS Guardian Advanced Rules Engine v2"}
+    return {"status": "active", "engine": "Offline Qwen2-VL Edge Architecture active"}
 
-@app.post("/api/verify-bill", response_model=VerificationResponse)
+@app.post("/api/verify-bill")
 async def verify_procurement_bill(file: UploadFile = File(...)):
-    """
-    1. Reads incoming physical procurement bill / UC document.
-    2. Runs OpenCV preprocessing & EasyOCR extraction.
-    3. Normalizes unstructured text into structured JSON via Gemini LLM.
-    4. Executes multi-parameter GFR 154 audit (velocity, price benchmarks, ghost vendors).
-    """
-    if not file.filename.lower().endswith(('.png', '.jpg', '.jpeg')):
-        raise HTTPException(status_code=400, detail="Only JPG and PNG document images are accepted.")
+    allowed_extensions = ('.png', '.jpg', '.jpeg')
+    if not file.filename.lower().endswith(allowed_extensions):
+        raise HTTPException(status_code=400, detail="Only JPG and PNG images are accepted.")
 
     try:
-        # Read raw image buffer
-        image_bytes = await file.read()
-        logger.info(f"Initiating verification for: {file.filename}")
+        file_bytes = await file.read()
+        logger.info(f"Initiating offline verification for: {file.filename}")
 
-        # Step A: Computer Vision & OCR Extraction
-        raw_text = extract_raw_text_from_image(image_bytes)
+        # Step 1: Direct VLM Image-to-JSON Extraction
+        extracted_data = vlm_engine.extract_document_data(file_bytes)
         
-        # Step B: LLM Schema Parsing
-        extracted_data = parse_raw_text_to_json(raw_text)
-        
-        # Step C: Multi-Parameter Contextual Anomaly Engine
-        # (Standardizes inventory, audits prices, verifies GFR 154 threshold, checks 30d velocity & ghost vendors)
-        compliance_report = evaluate_gfr_154_compliance(extracted_data)
+        # In the next step, we will re-integrate the Rule Engine here
+        # based on whether the document_type is a WCC or a Retail Bill.
 
-        # Return standardized verification payload
-        return VerificationResponse(
-            transaction_id=f"TXN-{uuid.uuid4().hex[:8].upper()}",
-            document_classification="Handwritten Receipt (Kaccha Bill)",
-            extracted_data=extracted_data,
-            compliance_report=compliance_report
-        )
+        return {
+            "system_audit_id": f"REQ-{uuid.uuid4().hex[:8].upper()}",
+            "hardware_accelerator": vlm_engine.active_hardware,
+            "extracted_data": extracted_data
+        }
 
     except Exception as e:
         logger.error(f"Verification pipeline failed: {str(e)}")
