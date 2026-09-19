@@ -49,19 +49,25 @@ class HybridVerificationEngine:
         image = Image.open(io.BytesIO(image_bytes)).convert("RGB")
         
         prompt_text = (
-            "Analyze this official Indian public works document image with high precision. "
-            "Extract the following details in strict JSON format. Do not include markdown code blocks. \n"
+            "You are an expert Indian financial forensic auditor. Analyze this government procurement document, tax invoice, or completion certificate. "
+            "If the document contains Hindi or regional Indian languages, translate the extracted data to English. "
+            "Extract the following details in strict JSON format. Use null if a field is not present. Do not include markdown wrappers. \n"
             "{\n"
-            '  "document_type": "Exact title/classification of the document",\n'
-            '  "transaction_id": null,\n'  # Hardcoded null to explicitly prove no ID was hallucinated
-            '  "name_of_work": "Full description of the work",\n'
-            '  "sanction_number_and_date": "Sanction order number and date",\n'
-            '  "amount_of_estimate": "Estimated amount numerical value",\n'
-            '  "expenditure": "Actual expenditure numerical value",\n'
-            '  "date_of_commencement": "Commencement date",\n'
-            '  "date_of_completion": "Completion date",\n'
+            '  "document_type": "Exact classification (e.g., Tax Invoice, Completion Certificate, Receipt)",\n'
+            '  "vendor_name": "Name of the issuing contractor or shop",\n'
+            '  "vendor_gstin": "15-character alphanumeric GSTIN",\n'
+            '  "hsn_sac_codes": ["Array of extracted HSN/SAC codes"],\n'
+            '  "invoice_date": "DD/MM/YYYY",\n'
+            '  "base_amount": "Numerical value before tax",\n'
+            '  "cgst_amount": "Central GST numerical value",\n'
+            '  "sgst_amount": "State GST numerical value",\n'
+            '  "igst_amount": "Integrated GST numerical value",\n'
+            '  "total_billed_amount": "Final numerical value including all taxes",\n'
+            '  "payment_status": "Paid, Pending, or Due",\n'
             '  "has_official_stamp": true or false,\n'
-            '  "has_signature": true or false\n'
+            '  "has_physical_signature": true or false,\n'
+            '  "has_digital_signature": true or false,\n'
+            '  "detected_languages": ["Array of languages detected in the image"]\n'
             "}"
         )
 
